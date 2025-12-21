@@ -40,9 +40,17 @@ A utility that:
 2. Wraps them in auth/capability middleware automatically.
 3. Injects logic to switch between `mock` and `real`.
 4. Handles standard response formatting and error handling.
+5. **NEW:** Adds traceability headers (`X-Implementation-Mode: MOCK/REAL`).
+6. **NEW:** Validates responses against Zod schemas (contract validation).
 
 ### B. `services/MockDataService.js`
 A helper to generate consistent fake data (e.g., `Mock.user()`, `Mock.uuid()`).
+
+### C. **NEW: Auto-Route Discovery**
+Server automatically scans `routes/` directory and registers all `*Routes.js` files.
+
+### D. **NEW: Contract Validation**
+Use Zod schemas to ensure `mock` and `real` responses have identical structure. Prevents frontend breakage when flipping to real mode.
 
 ---
 
@@ -53,18 +61,26 @@ A helper to generate consistent fake data (e.g., `Mock.user()`, `Mock.uuid()`).
 - **Structured Development:** Forces clear separation of data requirements (mock) and logic (real).
 - **AI-Native:** AI can see the `mock` data structure and easily write the SQL/Database logic for the `real` part.
 - **Easy Testing:** Can test edge cases by temporarily modifying the `mock` return.
+- **Zero-Config Route Registration:** Auto-discovery means new APIs are live instantly.
+- **Contract Safety:** Zod validation prevents mock/real drift that could break frontend.
+- **Smart Mocks:** Consistent fake data generation across all routes.
 
 ### Cons
-- **Consistency Risk:** If the `mock` return and `real` return drift apart, frontend might break. (Can be solved by using a shared Schema).
+- **Consistency Risk:** If the `mock` return and `real` return drift apart, frontend might break. (**SOLVED:** Contract validation with Zod schemas).
 - **Overhead:** Small amount of extra code for the `RouterFactory` logic.
 
 ---
 
-## 5. Implementation Status
+## 5. Implementation Status ✅ COMPLETE
 - [x] **`core/RouterFactory.js`**: Centralized route handler with auth & mock/real logic.
 - [x] **`MOCK_MODE` Toggle**: Global control via `.env`.
 - [x] **`scripts/generate-route.js`**: CLI for instant route scaffolding.
-- [x] **Examples**: `userRoutes.js` and `transactionRoutes.js` implemented.
+- [x] **Examples**: `userRoutes.js`, `transactionRoutes.js`, and `productRoutes.js` implemented.
+- [x] **`services/MockDataService.js`**: Smart mock data generation.
+- [x] **Auto-Route Discovery**: Zero-config route registration.
+- [x] **Contract Validation**: Zod schema enforcement.
+- [x] **Traceability Headers**: `X-Implementation-Mode` response headers.
+- [x] **Demo Script**: `node demo.js` shows everything working.
 
 ## 6. Usage Guide
 
@@ -88,4 +104,42 @@ MOCK_MODE=true # Use mocks
 # OR
 MOCK_MODE=false # Use real implementations
 ```
+
+### Running the Demo
+```bash
+# Start the server
+MOCK_MODE=true node server.js
+
+# In another terminal, run the demo
+node demo.js
+```
+
+### Using Smart Mocks
+```javascript
+const MockDataService = require('./services/MockDataService');
+
+// In your routes:
+mock: (req) => MockDataService.user(req.params.id)
+```
+
+### Contract Validation
+```javascript
+const { z } = require('zod');
+
+const UserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string().email()
+});
+
+module.exports = [{
+  path: '/users/:id',
+  schema: UserSchema, // Both mock and real will be validated
+  mock: (req) => ({ id: '1', name: 'John', email: 'john@example.com' }),
+  real: async (req) => { /* database logic */ }
+}];
+```
+
+### Auto-Route Discovery
+Routes are automatically registered when you run the server. No manual registration needed in `server.js`!
 

@@ -1,5 +1,10 @@
 const jwt = require('jsonwebtoken');
-const DatabaseService = require('../services/DatabaseService');
+
+// Conditionally import DatabaseService only when not in mock mode
+let DatabaseService;
+if (process.env.MOCK_MODE !== 'true') {
+  DatabaseService = require('../services/DatabaseService');
+}
 
 // Verify JWT token
 const verifyToken = (req, res, next) => {
@@ -37,6 +42,13 @@ const verifyToken = (req, res, next) => {
 const requireRole = (...allowedRoles) => {
   return [verifyToken, async (req, res, next) => {
     try {
+      // In mock mode, skip database checks and use mock user data
+      if (process.env.MOCK_MODE === 'true') {
+        req.user.role = req.user.role || 'Member';
+        req.user.is_premium = req.user.is_premium || false;
+        return next();
+      }
+
       const users = await DatabaseService.find('users', {
         where: { id: req.user.id },
         select: ['role', 'is_premium', 'status']

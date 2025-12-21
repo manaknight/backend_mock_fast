@@ -1,10 +1,22 @@
-const DatabaseService = require('../services/DatabaseService');
+// Conditionally import DatabaseService only when not in mock mode
+let DatabaseService;
+if (process.env.MOCK_MODE !== 'true') {
+  DatabaseService = require('../services/DatabaseService');
+}
 const { hasCapability } = require('../core/Capability');
 
 // Middleware to check if user has required capability
 const requireCapability = (requiredCapability) => {
   return async (req, res, next) => {
     try {
+      // In mock mode, skip database checks and assume user has all capabilities
+      if (process.env.MOCK_MODE === 'true') {
+        req.user.role = req.user.role || 'Member';
+        req.user.status = req.user.status || 'active';
+        req.user.is_premium = req.user.is_premium || false;
+        return next();
+      }
+
       // Get user role from database
       const users = await DatabaseService.find('users', {
         where: { id: req.user.id },

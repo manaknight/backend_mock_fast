@@ -1,8 +1,8 @@
 require('dotenv').config();
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const RouterFactory = require('./core/RouterFactory');
-const userRoutes = require('./routes/userRoutes');
-const transactionRoutes = require('./routes/transactionRoutes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -14,14 +14,33 @@ app.use(express.json());
 app.get('/', (req, res) => {
   res.json({
     message: 'Quick Fast Hybrid API is running',
-    mock_mode: process.env.MOCK_MODE === 'true'
+    mock_mode: process.env.MOCK_MODE === 'true',
+    auto_discovery: true
   });
 });
 
-// Use RouterFactory to create and register routes
-// Prefix with /api for all structured routes
-app.use('/api', RouterFactory.create(userRoutes));
-app.use('/api', RouterFactory.create(transactionRoutes));
+// Auto-discover and register all route files
+const routesPath = path.join(__dirname, 'routes');
+if (fs.existsSync(routesPath)) {
+  const routeFiles = fs.readdirSync(routesPath)
+    .filter(file => file.endsWith('Routes.js'))
+    .map(file => path.join(routesPath, file));
+
+  console.log(`🔍 Auto-discovering routes from ${routeFiles.length} files:`);
+
+  routeFiles.forEach(filePath => {
+    try {
+      const routeDef = require(filePath);
+      const routeName = path.basename(filePath, '.js');
+      app.use('/api', RouterFactory.create(routeDef));
+      console.log(`  ✅ ${routeName}`);
+    } catch (error) {
+      console.error(`  ❌ Failed to load ${filePath}:`, error.message);
+    }
+  });
+} else {
+  console.log('⚠️  No routes directory found. Create some routes with: node scripts/generate-route.js <ModelName>');
+}
 
 // Health check route
 app.get('/health', (req, res) => {

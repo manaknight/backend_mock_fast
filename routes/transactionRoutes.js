@@ -1,6 +1,10 @@
-const DatabaseService = require('../services/DatabaseService');
-const StripeService = require('../services/StripeService');
-const S3Service = require('../services/S3Service');
+// Conditionally import services only when not in mock mode
+let DatabaseService, StripeService, S3Service;
+if (process.env.MOCK_MODE !== 'true') {
+  DatabaseService = require('../services/DatabaseService');
+  StripeService = require('../services/StripeService');
+  S3Service = require('../services/S3Service');
+}
 
 /**
  * Example of a "Complicated" API route definition.

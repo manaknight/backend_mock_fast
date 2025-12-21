@@ -1,6 +1,7 @@
 const express = require('express');
 const auth = require('../middleware/auth');
 const { requireCapability } = require('../middleware/capability');
+const { z } = require('zod');
 
 /**
  * RouterFactory generates Express routers from a structured route definition.
@@ -27,6 +28,7 @@ class RouterFactory {
         capability,
         mock,
         real,
+        schema, // Zod schema for contract validation
         forceMock = false,
         noAuth = false
       } = route;
@@ -35,11 +37,13 @@ class RouterFactory {
 
       // 1. Auth/Capability Middleware
       if (!noAuth) {
-        middlewares.push(auth.verifyToken);
         if (capability) {
           middlewares.push(requireCapability(capability));
+        } else {
+          middlewares.push(auth.verifyToken);
         }
       }
+      // Note: requireCapability automatically includes auth verification
 
       // 2. Main handler
       const handler = async (req, res) => {
@@ -47,27 +51,42 @@ class RouterFactory {
           // Priority: route-level forceMock > global MOCK_MODE
           const shouldUseMock = forceMock || (isGlobalMock && !route.forceReal);
 
+          // Add traceability header
+          res.setHeader('X-Implementation-Mode', shouldUseMock ? 'MOCK' : 'REAL');
+
+          let responseData;
+
           if (shouldUseMock && mock) {
-            const mockData = typeof mock === 'function' ? await mock(req) : mock;
-            return res.json({
-              success: true,
-              data: mockData,
-              _mock: true
+            responseData = typeof mock === 'function' ? await mock(req) : mock;
+          } else if (real) {
+            responseData = await real(req);
+          } else {
+            // Fallback if neither mock nor real is available/selected
+            return res.status(501).json({
+              error: 'Not Implemented',
+              message: `No ${shouldUseMock ? 'mock' : 'real'} implementation for ${method} ${path}`
             });
           }
 
-          if (real) {
-            const data = await real(req);
-            return res.json({
-              success: true,
-              data: data
-            });
+          // Validate response against schema if provided
+          if (schema && schema instanceof z.ZodSchema) {
+            try {
+              schema.parse(responseData);
+            } catch (validationError) {
+              console.error(`Schema validation failed for ${method} ${path}:`, validationError.errors);
+              return res.status(500).json({
+                success: false,
+                error: 'Contract Violation',
+                message: `Response does not match expected schema. Mode: ${shouldUseMock ? 'MOCK' : 'REAL'}`,
+                details: validationError.errors
+              });
+            }
           }
 
-          // Fallback if neither mock nor real is available/selected
-          res.status(501).json({
-            error: 'Not Implemented',
-            message: `No ${shouldUseMock ? 'mock' : 'real'} implementation for ${method} ${path}`
+          return res.json({
+            success: true,
+            data: responseData,
+            ...(shouldUseMock && { _mock: true })
           });
         } catch (error) {
           console.error(`Error in ${method} ${path}:`, error);
