@@ -40,21 +40,43 @@ A utility that:
 2. Wraps them in auth/capability middleware automatically.
 3. Injects logic to switch between `mock` and `real`.
 4. Handles standard response formatting and error handling.
-5. **NEW:** Adds traceability headers (`X-Implementation-Mode: MOCK/REAL`).
-6. **NEW:** Validates responses against Zod schemas (contract validation).
+5. **Traceability:** Adds traceability headers (`X-Implementation-Mode: MOCK/REAL`).
+6. **Response Validation:** Validates responses against Zod schemas (contract validation).
+7. **Request Validation:** Validates `body`, `query`, and `params` before processing.
+8. **Latency Simulation:** Simulates network delay for mocks.
 
 ### B. `services/MockDataService.js`
 A helper to generate consistent fake data (e.g., `Mock.user()`, `Mock.uuid()`).
+- **Stateful Mocks:** In-memory storage to persist data during a session (e.g., POSTing a user actually "saves" it to the mock list).
 
-### C. **NEW: Auto-Route Discovery**
+### C. Auto-Route Discovery
 Server automatically scans `routes/` directory and registers all `*Routes.js` files.
 
-### D. **NEW: Contract Validation**
-Use Zod schemas to ensure `mock` and `real` responses have identical structure. Prevents frontend breakage when flipping to real mode.
+### D. Auto-Generated Documentation
+Provides an `/api-docs` endpoint showing all routes, methods, and expected schemas.
+
+### E. AI-Ready Context
+A script to export the entire API structure for easy sharing with LLMs for "backward filling" real logic.
 
 ---
 
-## 4. Pros & Cons
+## 4. Advanced Time-Saving Features
+
+### Request Validation
+You can now define `requestSchema` in your routes to validate `body`, `query`, or `params` using Zod. This catches frontend errors before they hit your logic.
+
+### Latency Simulation
+Set `MOCK_LATENCY=500` in `.env` to simulate a slow network for all mocks. This helps you build better loading states in the frontend.
+
+### Stateful Mocks (Mock DB)
+Use `MockDataService.persist()` to save data to an in-memory storage. This allows you to `POST` a user and then see it in the `GET /users` list immediately.
+
+### Auto-Generated Docs
+Visit `/api-docs` on your server to see a visual list of all registered routes, their methods, capabilities, and validation status.
+
+---
+
+## 5. Pros & Cons
 
 ### Pros
 - **Instant Productivity:** Frontend can start immediately with `mock`.
@@ -81,6 +103,11 @@ Use Zod schemas to ensure `mock` and `real` responses have identical structure. 
 - [x] **Contract Validation**: Zod schema enforcement.
 - [x] **Traceability Headers**: `X-Implementation-Mode` response headers.
 - [x] **Demo Script**: `node demo.js` shows everything working.
+- [x] **Request Validation**: Incoming data validation via Zod.
+- [x] **Latency Simulation**: Mock network delay.
+- [x] **Stateful Mocks**: In-memory "Mock DB".
+- [x] **Auto-Docs**: `/api-docs` endpoint.
+- [x] **AI-Context**: `scripts/dump-context.js`.
 
 ## 6. Usage Guide
 
