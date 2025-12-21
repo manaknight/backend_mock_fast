@@ -1,15 +1,31 @@
 // Role-based capabilities configuration
-// Admin can do anything
-// Member can only access member-level APIs
-// Support can do anything except settings, add users, see admin affiliate management
+// SuperAdmin: Global system administration (all tenants)
+// Admin: Tenant-scoped administration (own tenant only)
+// Member: Basic user access
+// Support: Enhanced user support access
 const capabilities = {
-  admin: {
+  superadmin: {
     can: [
       '*',
-      // Explicitly include settings capabilities
-      'settings:read',
-      'settings:update',
-      'settings:jackpot_draw'
+      // All global admin capabilities
+      'system:admin',
+      'tenants:manage',
+      'global:settings',
+      'cross_tenant:access'
+    ],
+  },
+  admin: {
+    can: [
+      // Tenant-scoped admin capabilities
+      'tenant:admin',
+      'tenant:settings',
+      'tenant:users:manage',
+      'tenant:data:manage',
+      'tenant:schemas:manage',
+      'tenant:routes:manage',
+      'tenant:monitoring',
+      // Can access their own tenant's admin console
+      'admin_console:tenant'
     ],
   },
   member: {

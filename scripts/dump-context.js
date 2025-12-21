@@ -7,28 +7,38 @@ const path = require('path');
  * that can be pasted into an LLM (Cursor, ChatGPT, etc.)
  */
 
-const routesPath = path.join(process.cwd(), 'routes');
 const output = [];
-
 output.push("# API STRUCTURE CONTEXT");
 output.push("This file contains the current route definitions, request/response schemas, and mock logic.\n");
 
-if (fs.existsSync(routesPath)) {
-  const files = fs.readdirSync(routesPath).filter(f => f.endsWith('Routes.js'));
-
+// 1. Shared Routes
+const sharedPath = path.join(process.cwd(), 'routes');
+if (fs.existsSync(sharedPath)) {
+  const files = fs.readdirSync(sharedPath).filter(f => f.endsWith('Routes.js'));
   files.forEach(file => {
-    output.push(`## FILE: routes/${file}`);
-    const content = fs.readFileSync(path.join(routesPath, file), 'utf8');
-
-    // Clean up content slightly for better readability
-    const cleaned = content
-      .replace(/\/\/.*$/gm, '') // Remove single-line comments
-      .replace(/\s+/g, ' ')      // Collapse whitespace
-      .replace(/require\(.*?\);?/g, ''); // Remove requires
-
+    output.push(`## FILE: routes/${file} (SHARED)`);
     output.push("```javascript");
-    output.push(content);
+    output.push(fs.readFileSync(path.join(sharedPath, file), 'utf8'));
     output.push("```\n");
+  });
+}
+
+// 2. Project Routes (Tenant System)
+const projectsPath = path.join(process.cwd(), 'projects');
+if (fs.existsSync(projectsPath)) {
+  const projects = fs.readdirSync(projectsPath).filter(f => fs.statSync(path.join(projectsPath, f)).isDirectory());
+
+  projects.forEach(projectId => {
+    const projectRoutesPath = path.join(projectsPath, projectId, 'routes');
+    if (fs.existsSync(projectRoutesPath)) {
+      const files = fs.readdirSync(projectRoutesPath).filter(f => f.endsWith('Routes.js'));
+      files.forEach(file => {
+        output.push(`## FILE: projects/${projectId}/routes/${file} (PROJECT: ${projectId})`);
+        output.push("```javascript");
+        output.push(fs.readFileSync(path.join(projectRoutesPath, file), 'utf8'));
+        output.push("```\n");
+      });
+    }
   });
 }
 

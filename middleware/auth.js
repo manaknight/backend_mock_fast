@@ -51,7 +51,7 @@ const requireRole = (...allowedRoles) => {
 
       const users = await DatabaseService.find('users', {
         where: { id: req.user.id },
-        select: ['role', 'is_premium', 'status']
+        select: ['role', 'is_premium', 'status', 'tenant_id']
       });
 
       if (users.length === 0) {
@@ -78,6 +78,8 @@ const requireRole = (...allowedRoles) => {
       }
 
       req.user.role = user.role;
+      req.user.status = user.status;
+      req.user.tenantId = user.tenant_id;
       req.user.is_premium = user.is_premium;
       next();
     } catch (error) {
@@ -112,8 +114,10 @@ const auth = {
   requirePremium,
   // Common role combinations
   requireMember: requireRole('Member', 'Admin', 'Support'),
-  requireAdmin: requireRole('Admin'),
+  requireAdmin: requireRole('Admin'), // Tenant-scoped admin
+  requireSuperAdmin: requireRole('SuperAdmin'), // Global system admin
   requireAdminOrSupport: requireRole('Admin', 'Support'),
+  requireAnyAdmin: requireRole('Admin', 'SuperAdmin'), // Any type of admin
   requirePremiumMember: [requireRole('Member', 'Admin', 'Support'), requirePremium]
 };
 

@@ -1,172 +1,342 @@
-# Quick Fast Hybrid API Plan
+# Quick Fast Hybrid API Plan (Tenant-First)
 
 ## Goal
-A system to rapidly spin up APIs with mock data that can be switched to real implementations via a toggle.
+A multi-tenant system to rapidly spin up APIs for 100+ projects on a single backend. Each project has its own mock data that can be switched to real implementations via a toggle.
 
 ---
 
 ## 1. Unified Route Definition (The "AI-Friendly" Structure)
 Instead of scattered routes, we use a structured definition. This is easy for AI to parse and "backward fill".
 
-### Handling Complexity
-For complicated APIs (e.g., payments, S3 uploads), keep the `mock` simple (returning the final expected object) and put the orchestration logic in `real`. This allows the frontend to be unblocked while the complex backend logic is developed.
+### Multi-Tenant Architecture
+The system is built to host many isolated projects simultaneously.
+- **Project Isolation:** Each project lives in `projects/[projectId]/`.
+- **Automatic Namespacing:** Database tables are automatically prefixed with the project ID (e.g., `alpha_users`) via `TenantDatabaseService`.
+- **Zero-Config Loading:** The `TenantManager` auto-discovers and registers project routes at `/api/[projectId]/[path]`.
 
 ```javascript
-// Example: routes/userRoutes.js
+// Example: projects/alpha/routes/userRoutes.js
 {
-  path: '/users/:id',
+  path: '/users',
   method: 'GET',
   capability: 'users:read',
-  mock: (req) => ({
-    id: req.params.id,
-    name: "Mock User",
-    email: "mock@example.com"
-  }),
-  real: async (req) => {
-    return await DatabaseService.findOne('users', { where: { id: req.params.id } });
+  schema: UserListSchema,
+  mock: (req) => MockDataService.list(() => MockDataService.user(), 5),
+  real: async (req, db) => {
+    // 'db' is automatically namespaced to 'alpha'
+    return await db.find('users');
   }
 }
 ```
 
+---
+
 ## 2. Global & Local Toggling
-- **Global:** `MOCK_MODE=true` in `.env` forces all routes to use `mock` implementation.
+- **Global:** `MOCK_MODE=true` in `.env` forces all projects to use `mock` implementations.
 - **Local:** Individual route overrides (e.g., `{ forceMock: true }`).
+- **Latency:** `MOCK_LATENCY=300` in `.env` simulates network delay for all mocks.
+
+---
 
 ## 3. Implementation Components
 
-### A. `core/RouterFactory.js`
-A utility that:
-1. Takes an array of route definitions.
-2. Wraps them in auth/capability middleware automatically.
-3. Injects logic to switch between `mock` and `real`.
-4. Handles standard response formatting and error handling.
-5. **Traceability:** Adds traceability headers (`X-Implementation-Mode: MOCK/REAL`).
-6. **Response Validation:** Validates responses against Zod schemas (contract validation).
-7. **Request Validation:** Validates `body`, `query`, and `params` before processing.
-8. **Latency Simulation:** Simulates network delay for mocks.
+### A. `core/TenantManager.js`
+The brain of the system. It scans the `projects/` directory, loads configs, and registers routes dynamically. It ensures that Project A cannot collide with Project B.
 
-### B. `services/MockDataService.js`
-A helper to generate consistent fake data (e.g., `Mock.user()`, `Mock.uuid()`).
-- **Stateful Mocks:** In-memory storage to persist data during a session (e.g., POSTing a user actually "saves" it to the mock list).
+### B. `core/RouterFactory.js`
+Generates Express routers. It handles:
+1. **Mock vs Real** switching logic.
+2. **Auth/Capability** middleware injection.
+3. **Request/Response Validation** via Zod schemas.
+4. **DB Injection:** Injects the namespaced `db` into `real` functions.
 
-### C. Auto-Route Discovery
-Server automatically scans `routes/` directory and registers all `*Routes.js` files.
+### C. `core/TenantDatabaseService.js`
+A proxy that wraps `DatabaseService`. It intercepts calls and prefixes table names with the `projectId`.
 
-### D. Auto-Generated Documentation
-Provides an `/api-docs` endpoint showing all routes, methods, and expected schemas.
-
-### E. AI-Ready Context
-A script to export the entire API structure for easy sharing with LLMs for "backward filling" real logic.
+### D. `services/MockDataService.js`
+Provides "Smart Mocks". Includes an in-memory "Mock DB" (`persist`, `findAll`, `findById`) to maintain state during a development session.
 
 ---
 
-## 4. Advanced Time-Saving Features
+## 4. Usage Guide
 
-### Request Validation
-You can now define `requestSchema` in your routes to validate `body`, `query`, or `params` using Zod. This catches frontend errors before they hit your logic.
-
-### Latency Simulation
-Set `MOCK_LATENCY=500` in `.env` to simulate a slow network for all mocks. This helps you build better loading states in the frontend.
-
-### Stateful Mocks (Mock DB)
-Use `MockDataService.persist()` to save data to an in-memory storage. This allows you to `POST` a user and then see it in the `GET /users` list immediately.
-
-### Auto-Generated Docs
-Visit `/api-docs` on your server to see a visual list of all registered routes, their methods, capabilities, and validation status.
-
----
-
-## 5. Pros & Cons
-
-### Pros
-- **Instant Productivity:** Frontend can start immediately with `mock`.
-- **Structured Development:** Forces clear separation of data requirements (mock) and logic (real).
-- **AI-Native:** AI can see the `mock` data structure and easily write the SQL/Database logic for the `real` part.
-- **Easy Testing:** Can test edge cases by temporarily modifying the `mock` return.
-- **Zero-Config Route Registration:** Auto-discovery means new APIs are live instantly.
-- **Contract Safety:** Zod validation prevents mock/real drift that could break frontend.
-- **Smart Mocks:** Consistent fake data generation across all routes.
-
-### Cons
-- **Consistency Risk:** If the `mock` return and `real` return drift apart, frontend might break. (**SOLVED:** Contract validation with Zod schemas).
-- **Overhead:** Small amount of extra code for the `RouterFactory` logic.
-
----
-
-## 5. Implementation Status ✅ COMPLETE
-- [x] **`core/RouterFactory.js`**: Centralized route handler with auth & mock/real logic.
-- [x] **`MOCK_MODE` Toggle**: Global control via `.env`.
-- [x] **`scripts/generate-route.js`**: CLI for instant route scaffolding.
-- [x] **Examples**: `userRoutes.js`, `transactionRoutes.js`, and `productRoutes.js` implemented.
-- [x] **`services/MockDataService.js`**: Smart mock data generation.
-- [x] **Auto-Route Discovery**: Zero-config route registration.
-- [x] **Contract Validation**: Zod schema enforcement.
-- [x] **Traceability Headers**: `X-Implementation-Mode` response headers.
-- [x] **Demo Script**: `node demo.js` shows everything working.
-- [x] **Request Validation**: Incoming data validation via Zod.
-- [x] **Latency Simulation**: Mock network delay.
-- [x] **Stateful Mocks**: In-memory "Mock DB".
-- [x] **Auto-Docs**: `/api-docs` endpoint.
-- [x] **AI-Context**: `scripts/dump-context.js`.
-
-## 6. Usage Guide
-
-### Scaffolding a new API
-To create a new set of routes (e.g., for "Post"):
+### 1. Create a New Project
+Use the scaffolding script to create a project-specific route:
 ```bash
-node scripts/generate-route.js Post
+# Create project folder first
+mkdir -p projects/beta/routes
+
+# Generate a route inside that project
+node scripts/generate-route.js Product beta
 ```
 
-### Registering Routes
-In `server.js`:
-```javascript
-const postRoutes = require('./routes/postRoutes');
-app.use('/api', RouterFactory.create(postRoutes));
-```
-
-### Toggling Mock Mode
-Update `.env`:
-```env
-MOCK_MODE=true # Use mocks
-# OR
-MOCK_MODE=false # Use real implementations
-```
-
-### Running the Demo
+### 2. Verify Project Safety
+Before deploying or restarting, check if the project code follows the framework rules:
 ```bash
-# Start the server
-MOCK_MODE=true node server.js
-
-# In another terminal, run the demo
-node demo.js
+node scripts/verify-project.js beta
 ```
 
-### Using Smart Mocks
+### 3. Registering Shared Routes (Optional)
+If you have APIs that all projects share, put them in the root `routes/` folder. They will be auto-discovered and registered under `/api/[path]`.
+
+---
+
+## 5. AI Implementation Workflow (Best Way)
+
+To have an AI implement a full feature for a specific project:
+
+1.  **Context:** Run `node scripts/dump-context.js` and upload `api_context_for_ai.txt`.
+2.  **Prompt:**
+    > "I am working on project 'delta'.
+    > 1. Create `projects/delta/routes/orderRoutes.js`.
+    > 2. I need `GET /orders` and `POST /orders`.
+    > 3. Use Zod for validation.
+    > 4. In `real`, use the namespaced `db` to save to the 'orders' table.
+    > 5. In `mock`, use `MockDataService` to return a list of 5 realistic orders."
+
+### Schema Decision Process
+
+The AI should analyze business requirements and define:
+
+1. **Zod Response Schemas** - For API contract validation:
+   ```javascript
+   const OrderSchema = z.object({
+     id: z.string(),
+     customerId: z.string(),
+     total: z.number().positive(),
+     status: z.enum(['pending', 'paid', 'shipped', 'delivered']),
+     items: z.array(z.object({
+       productId: z.string(),
+       quantity: z.number().int().positive(),
+       price: z.number().positive()
+     })),
+     createdAt: z.string().datetime()
+   });
+   ```
+
+2. **Request Validation Schemas** - For input validation:
+   ```javascript
+   requestSchema: {
+     body: z.object({
+       customerId: z.string(),
+       items: z.array(z.object({
+         productId: z.string(),
+         quantity: z.number().int().min(1)
+       }))
+     })
+   }
+   ```
+
+3. **Mock Data Generators** - Realistic test data that matches schemas.
+
+### MySQL Migration Process
+
+**Current State:** No automated migrations. Tables must be pre-created.
+
+**Manual Migration Steps:**
+1. **Design Schema** based on Zod schemas:
+   ```sql
+   CREATE TABLE delta_orders (
+     id VARCHAR(36) PRIMARY KEY,
+     customer_id VARCHAR(36) NOT NULL,
+     total DECIMAL(10,2) NOT NULL,
+     status ENUM('pending', 'paid', 'shipped', 'delivered') DEFAULT 'pending',
+     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+     INDEX idx_customer (customer_id),
+     INDEX idx_status (status)
+   );
+   ```
+
+2. **Create Related Tables** for nested objects:
+   ```sql
+   CREATE TABLE delta_order_items (
+     id VARCHAR(36) PRIMARY KEY,
+     order_id VARCHAR(36) NOT NULL,
+     product_id VARCHAR(36) NOT NULL,
+     quantity INT NOT NULL,
+     price DECIMAL(10,2) NOT NULL,
+     FOREIGN KEY (order_id) REFERENCES delta_orders(id),
+     INDEX idx_order (order_id)
+   );
+   ```
+
+3. **Test Real Implementation** after table creation:
+   - Use `DatabaseService.find()`, `insert()`, etc.
+   - Verify tenant namespacing works (`delta_orders`, not just `orders`)
+
+---
+
+## 6. Zero-Code Capabilities (2025 Vision) ⚡
+
+### A. SchemaIntelligenceService - One Schema, Everything Generated
+
+**Input:** Single Zod schema definition
+**Output:** Complete backend infrastructure
+
 ```javascript
-const MockDataService = require('./services/MockDataService');
-
-// In your routes:
-mock: (req) => MockDataService.user(req.params.id)
-```
-
-### Contract Validation
-```javascript
-const { z } = require('zod');
-
-const UserSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  email: z.string().email()
+// One source of truth
+const OrderSchema = z.object({
+  id: z.string().uuid(),
+  customerId: z.string(),
+  total: z.number().positive(),
+  status: z.enum(['pending','paid','shipped','delivered']),
+  items: z.array(z.object({
+    productId: z.string(),
+    quantity: z.number().int().positive(),
+    price: z.number().positive()
+  })),
+  createdAt: z.string().datetime()
 });
 
-module.exports = [{
-  path: '/users/:id',
-  schema: UserSchema, // Both mock and real will be validated
-  mock: (req) => ({ id: '1', name: 'John', email: 'john@example.com' }),
-  real: async (req) => { /* database logic */ }
-}];
+// Automatically generates:
+// ✅ SQL DDL: CREATE TABLE delta_orders (...)
+// ✅ Indexes: PRIMARY KEY, FOREIGN KEYS, performance indexes
+// ✅ Mock Generators: realisticOrder(), realisticOrderList()
+// ✅ OpenAPI Docs: /docs endpoint with full spec
+// ✅ Validation Middleware: Zod-based request/response validation
+// ✅ Test Fixtures: valid/invalid data for testing
 ```
 
-### Auto-Route Discovery
-Routes are automatically registered when you run the server. No manual registration needed in `server.js`!
+### B. AutoCRUDRouter - Default CRUD (Zero Route Code)
 
+**Input:** Minimal route definition
+**Output:** Full REST API
+
+```javascript
+// Before: 50+ lines of route definitions
+{
+  path: '/orders',
+  method: 'GET',
+  capability: 'orders:read',
+  mock: () => MockDataService.list(() => MockDataService.order(), 5),
+  real: async (req, db) => await db.find('orders')
+},
+{
+  path: '/orders/:id',
+  method: 'GET',
+  // ... more routes
+}
+
+// After: 5 lines
+{
+  resource: 'orders',
+  schema: OrderSchema,
+  capabilities: {
+    list: 'orders:read',
+    create: 'orders:write',
+    read: 'orders:read',
+    update: 'orders:write',
+    delete: 'orders:write'
+  }
+}
+```
+
+**Automatically provides:**
+- `GET /orders` - List with pagination, filtering, sorting
+- `GET /orders/:id` - Single record
+- `POST /orders` - Create with validation
+- `PATCH /orders/:id` - Update with validation
+- `DELETE /orders/:id` - Delete
+
+### C. QueryDSL - No Custom Filtering Logic
+
+**Input:** Natural query strings
+**Output:** Optimized database queries
+
+```javascript
+// Clients send:
+GET /orders?status=paid&total>100&sort=-createdAt&limit=20&page=1
+
+// Automatically becomes:
+{
+  where: {
+    status: 'paid',
+    total: { operator: '>', value: 100 }
+  },
+  orderBy: { createdAt: 'DESC' },
+  limit: 20,
+  offset: 0
+}
+
+// With automatic:
+// ✅ Query validation
+// ✅ SQL injection prevention
+// ✅ Index suggestions
+// ✅ Performance optimization
+```
+
+### D. Built-in Admin Console - Zero Dev Tooling
+
+**Access:** `http://localhost:3000/admin`
+**Security:** Tenant-scoped access control
+
+**Role-Based Access:**
+- **SuperAdmin** 👑 - Global system access (all tenants)
+- **Admin** 🏢 - Tenant-scoped access (own tenant only)
+- **Member/Support** ❌ - No admin access
+
+**Features (Scoped by Role):**
+- 📊 **System Dashboard** - Tenants, routes, schemas, request counts (filtered by access)
+- 🏗️ **Tenant Browser** - View projects and routes (SuperAdmin: all, Admin: own tenant)
+- 🛣️ **Route Explorer** - All endpoints with capabilities (filtered by tenant)
+- 📋 **Schema Manager** - View/generate SQL DDL, indexes, OpenAPI specs (tenant-scoped)
+- 📊 **Live Database Browser** - Query tables, view data (tenant-scoped access only)
+- 📈 **Request Logger** - Real-time API monitoring with latency (tenant-scoped)
+- 🎛️ **Mock Controls** - Toggle mock mode, simulate latency (scoped permissions)
+- 🔧 **Schema Generator** - One-click SQL generation (tenant-scoped)
+
+### E. Lifecycle Hooks - Extensibility
+
+**Hook Points:**
+- `beforeCreate` / `afterCreate`
+- `beforeRead` / `afterRead`
+- `beforeUpdate` / `afterUpdate`
+- `beforeDelete` / `afterDelete`
+- `beforeList` / `afterList`
+
+```javascript
+{
+  resource: 'orders',
+  schema: OrderSchema,
+  capabilities: { /* ... */ },
+  hooks: {
+    beforeCreate: async (data, context) => {
+      // Validate business rules
+      if (data.total > 10000) throw new Error('Order too large');
+      // Add audit fields
+      data.createdBy = context.req.user.id;
+    },
+    afterCreate: async (result, context) => {
+      // Send notifications
+      await sendOrderConfirmation(result.id);
+      // Update inventory
+      await updateInventory(result.items);
+    }
+  }
+}
+```
+
+🔐 Role-Based Access Control
+1. SuperAdmin (Global System Admin)
+Access: All tenants, all data, all operations
+Capabilities: system:admin, tenants:manage, global:settings, cross_tenant:access
+Use Case: System administrators managing the entire platform
+2. Admin (Tenant-Scoped Admin)
+Access: Only their own tenant's data and operations
+Capabilities: tenant:admin, tenant:settings, tenant:data:manage
+Use Case: Project managers administering their specific project
+3. Member/Support (No Admin Access)
+Access: Regular API access only
+Capabilities: Standard user permissions
+
+-- Users table now includes tenant_id
+ALTER TABLE users ADD COLUMN tenant_id VARCHAR(50) NOT NULL;
+
+// Extracts tenant info from JWT and database
+req.user = {
+  id: user.id,
+  email: user.email,
+  role: user.role,
+  tenantId: user.tenant_id,  // ← New: For scoping decisions
+  status: user.status
+};

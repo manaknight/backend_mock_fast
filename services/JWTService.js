@@ -16,13 +16,15 @@ const JWTService = {
 
   /**
    * Generate access token for user
-   * @param {Object} user - User object containing id, email, etc.
+   * @param {Object} user - User object containing id, email, role, tenantId, etc.
    * @returns {string} - JWT access token
    */
   generateAccessToken: (user) => {
     const payload = {
       id: user.id,
       email: user.email,
+      role: user.role,
+      tenantId: user.tenantId, // Tenant this user belongs to
       type: "access",
     };
 
