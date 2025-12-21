@@ -5,6 +5,34 @@
 class MockDataService {
   constructor() {
     this.seed = 0; // For deterministic results
+    this.storage = {
+      users: [],
+      products: [],
+      transactions: []
+    };
+  }
+
+  // Persist data in memory
+  persist(collection, data) {
+    if (!this.storage[collection]) this.storage[collection] = [];
+
+    // Simple update or create logic
+    const index = this.storage[collection].findIndex(item => item.id === data.id);
+    if (index >= 0) {
+      this.storage[collection][index] = { ...this.storage[collection][index], ...data };
+    } else {
+      this.storage[collection].push(data);
+    }
+    return data;
+  }
+
+  // Get from memory
+  findAll(collection) {
+    return this.storage[collection] || [];
+  }
+
+  findById(collection, id) {
+    return (this.storage[collection] || []).find(item => item.id === id);
   }
 
   // Generate a deterministic random number based on seed

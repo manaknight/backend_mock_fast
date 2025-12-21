@@ -28,12 +28,32 @@ class RouterFactory {
         capability,
         mock,
         real,
-        schema, // Zod schema for contract validation
+        schema, // Zod schema for response validation
+        requestSchema, // Zod schema for request validation { body, query, params }
+        delay, // Optional delay override for this route
         forceMock = false,
         noAuth = false
       } = route;
 
       const middlewares = [];
+
+      // 0. Request Validation Middleware
+      if (requestSchema) {
+        middlewares.push((req, res, next) => {
+          try {
+            if (requestSchema.body) requestSchema.body.parse(req.body);
+            if (requestSchema.query) requestSchema.query.parse(req.query);
+            if (requestSchema.params) requestSchema.params.parse(req.params);
+            next();
+          } catch (error) {
+            return res.status(400).json({
+              success: false,
+              error: 'Request Validation Failed',
+              details: error.errors
+            });
+          }
+        });
+      }
 
       // 1. Auth/Capability Middleware
       if (!noAuth) {
@@ -53,6 +73,14 @@ class RouterFactory {
 
           // Add traceability header
           res.setHeader('X-Implementation-Mode', shouldUseMock ? 'MOCK' : 'REAL');
+
+          // Latency simulation for mocks
+          if (shouldUseMock) {
+            const mockDelay = delay !== undefined ? delay : (parseInt(process.env.MOCK_LATENCY) || 0);
+            if (mockDelay > 0) {
+              await new Promise(resolve => setTimeout(resolve, mockDelay));
+            }
+          }
 
           let responseData;
 
