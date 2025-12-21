@@ -27,7 +27,16 @@ module.exports = [
     method: 'GET',
     capability: 'users:read',
     schema: UserListSchema, // Validate that response is an array of users
-    mock: () => MockDataService.list(() => MockDataService.user(), 3),
+    mock: () => {
+      const stored = MockDataService.findAll('users');
+      if (stored.length === 0) {
+        // Seed with some data if empty
+        const seeded = MockDataService.list(() => MockDataService.user(), 3);
+        seeded.forEach(u => MockDataService.persist('users', u));
+        return seeded;
+      }
+      return stored;
+    },
     real: async (req) => {
       return await DatabaseService.find('users', {
         orderBy: { createdAt: 'desc' }
@@ -39,7 +48,10 @@ module.exports = [
     method: 'GET',
     capability: 'users:read',
     schema: UserSchema, // Validate that response matches user structure
-    mock: (req) => MockDataService.user(req.params.id),
+    mock: (req) => {
+      const user = MockDataService.findById('users', req.params.id);
+      return user || MockDataService.user(req.params.id);
+    },
     real: async (req) => {
       const results = await DatabaseService.find('users', {
         where: { id: req.params.id }
@@ -51,12 +63,21 @@ module.exports = [
     path: '/users',
     method: 'POST',
     capability: 'users:write',
+    requestSchema: {
+      body: z.object({
+        name: z.string().min(2),
+        email: z.string().email()
+      })
+    },
     schema: UserSchema, // Validate that created user matches structure
-    mock: (req) => ({
-      ...MockDataService.user(),
-      ...req.body, // Merge with provided data
-      createdAt: new Date().toISOString()
-    }),
+    mock: (req) => {
+      const newUser = {
+        ...MockDataService.user(),
+        ...req.body, // Merge with provided data
+        createdAt: new Date().toISOString()
+      };
+      return MockDataService.persist('users', newUser);
+    },
     real: async (req) => {
       // Logic for creating a user
       return await DatabaseService.create('users', req.body);
