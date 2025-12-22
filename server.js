@@ -8,6 +8,8 @@ const VersionedRouter = require('./core/VersionedRouter');
 const { globalErrorHandler } = require('./core/errors');
 const { applySecurityMiddleware } = require('./middleware/security');
 const logger = require('./core/Logger');
+const TenantManager = require('./core/TenantManager');
+const AdminConsole = require('./services/AdminConsole');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -21,26 +23,22 @@ app.use(express.json());
 // Apply security middleware
 applySecurityMiddleware(app);
 
+// 1. Initialize Tenant Manager for multi-project support
+const tenantManager = new TenantManager(app);
+tenantManager.loadProjects();
+
 // Initialize versioned router
 const versionedRouter = new VersionedRouter();
 
-// Routes
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Quick Fast Hybrid API is running',
-    mock_mode: process.env.MOCK_MODE === 'true',
-    versioning: true,
-    versions: versionedRouter.getVersions(),
-    currentVersion: versionedRouter.currentVersion,
-    docs: '/api-docs'
-  });
-});
+// 1.5. Initialize Admin Console for debugging and operations
+const adminConsole = new AdminConsole(app);
 
-// Documentation store
+// 2. Shared Routes Registration (Auto-discovery)
 const allRouteDefinitions = [];
 
 // Auto-discover and register all route files with versioning support
 const routesPath = path.join(__dirname, 'routes');
+
 if (fs.existsSync(routesPath)) {
   const routeFiles = fs.readdirSync(routesPath)
     .filter(file => file.endsWith('Routes.js'))
@@ -62,7 +60,8 @@ if (fs.existsSync(routesPath)) {
         versionedRouter.registerVersion('v2', routeModule.v2);
 
         // Store for documentation
-        allRouteDefinitions.push(...routeModule.v1, ...routeModule.v2);
+        allRouteDefinitions.push(...routeModule.v1.map(r => ({ ...r, source: 'shared' })),
+                                ...routeModule.v2.map(r => ({ ...r, source: 'shared' })));
 
         logger.info(`Versioned routes loaded successfully`, {
           routeName,
@@ -71,10 +70,13 @@ if (fs.existsSync(routesPath)) {
           v2Count: routeModule.v2.length
         });
       } else {
-        // Legacy format - register as v1
+        // Legacy format - register as v1 and also with RouterFactory for tenant support
         const routes = Array.isArray(routeModule) ? routeModule : routeModule.default || [];
         versionedRouter.registerVersion('v1', routes);
-        allRouteDefinitions.push(...routes);
+        allRouteDefinitions.push(...routes.map(r => ({ ...r, source: 'shared' })));
+
+        // Also register with RouterFactory for multi-tenant compatibility
+        app.use('/api', RouterFactory.create(routes));
 
         logger.info(`Legacy routes loaded as v1`, {
           routeName,
@@ -97,7 +99,20 @@ if (fs.existsSync(routesPath)) {
   app.use(versionedRouter.createRouter());
 }
 
-// API Documentation Endpoint
+// 3. Health Check & Root
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Quick Fast Hybrid API is running',
+    mock_mode: process.env.MOCK_MODE === 'true',
+    versioning: true,
+    versions: versionedRouter.getVersions(),
+    currentVersion: versionedRouter.currentVersion,
+    projects_loaded: Array.from(tenantManager.projects.keys()),
+    docs: '/api-docs'
+  });
+});
+
+// 4. API Documentation Endpoint
 app.get('/api-docs', (req, res) => {
   const versions = versionedRouter.getVersions();
   const versionedDocs = {};
@@ -111,9 +126,35 @@ app.get('/api-docs', (req, res) => {
       capability: r.capability,
       authRequired: !r.noAuth,
       requestSchema: r.requestSchema ? 'ZodSchema' : null,
-      responseSchema: r.schema ? 'ZodSchema' : null
+      responseSchema: r.schema ? 'ZodSchema' : null,
+      source: 'versioned'
     }));
   });
+
+  // Combine shared routes with project routes for docs
+  const projectRoutes = [];
+  tenantManager.projects.forEach((data, projectId) => {
+    const projectPath = path.join(process.cwd(), 'projects', projectId, 'routes');
+    if (fs.existsSync(projectPath)) {
+      const files = fs.readdirSync(projectPath).filter(f => f.endsWith('Routes.js'));
+      files.forEach(file => {
+        const def = require(path.join(projectPath, file));
+        projectRoutes.push(...def.map(r => ({ ...r, path: `/${projectId}${r.path}`, source: projectId })));
+      });
+    }
+  });
+
+  const allDocs = [...allRouteDefinitions, ...projectRoutes];
+  const docs = allDocs.map(r => ({
+    path: `/api${r.path}`,
+    method: r.method || 'GET',
+    capability: r.capability,
+    authRequired: !r.noAuth,
+    source: r.source,
+    requestSchema: r.requestSchema ? 'ZodSchema' : null,
+    responseSchema: r.schema ? 'ZodSchema' : null
+  }));
+>>>>>>> 8a80d728ee4d98588b1abff9307fd87f9351deef
 
   res.send(`
     <html>
@@ -131,15 +172,17 @@ app.get('/api-docs', (req, res) => {
           .path { font-family: monospace; font-size: 1.1em; margin-left: 10px; }
           .meta { margin-top: 8px; color: #666; font-size: 0.9em; }
           .version-header { color: #007bff; border-bottom: 2px solid #007bff; padding-bottom: 5px; }
+          .source { float: right; color: #999; font-style: italic; }
           h1 { color: #333; }
           .current-version { background: #e8f5e8; border-color: #28a745; }
           .current-version .version-header { color: #28a745; border-color: #28a745; }
         </style>
       </head>
       <body>
-        <h1>Quick Fast Hybrid API Docs - Versioned</h1>
+        <h1>Quick Fast Hybrid API Docs</h1>
         <p><strong>Current Version:</strong> ${versionedRouter.currentVersion}</p>
         <p><strong>Available Versions:</strong> ${versions.join(', ')}</p>
+        <p><strong>Projects Loaded:</strong> ${Array.from(tenantManager.projects.keys()).join(', ') || 'none'}</p>
         <p><strong>Usage:</strong> Use <code>/api/v1/endpoint</code> or <code>/api/endpoint</code> (defaults to current version)</p>
 
         ${versions.map(version => `
@@ -147,6 +190,7 @@ app.get('/api-docs', (req, res) => {
             <h2 class="version-header">Version ${version} ${version === versionedRouter.currentVersion ? '(Current)' : ''}</h2>
             ${versionedDocs[version].map(d => `
               <div class="route">
+                <span class="source">versioned</span>
                 <span class="method ${d.method}">${d.method}</span>
                 <span class="path">${d.path}</span>
                 <div class="meta">
@@ -155,6 +199,19 @@ app.get('/api-docs', (req, res) => {
                 </div>
               </div>
             `).join('')}
+          </div>
+        `).join('')}
+
+        <h2>Project Routes</h2>
+        ${docs.filter(d => d.source !== 'versioned').map(d => `
+          <div class="route">
+            <span class="source">${d.source}</span>
+            <span class="method ${d.method}">${d.method}</span>
+            <span class="path">${d.path}</span>
+            <div class="meta">
+              Capability: ${d.capability || 'none'} | Auth: ${d.authRequired ? '✅' : '❌'} |
+              Validation: ${d.requestSchema ? 'Req ✅' : ''} ${d.responseSchema ? 'Res ✅' : ''}
+            </div>
           </div>
         `).join('')}
       </body>
@@ -172,7 +229,8 @@ app.get('/health', async (req, res) => {
     version: require('./package.json').version,
     mockMode: process.env.MOCK_MODE === 'true',
     apiVersion: versionedRouter.currentVersion,
-    availableVersions: versionedRouter.getVersions()
+    availableVersions: versionedRouter.getVersions(),
+    projectsLoaded: Array.from(tenantManager.projects.keys())
   };
 
   // Check database connection if not in mock mode
@@ -271,7 +329,8 @@ const server = app.listen(port, () => {
     mockMode: process.env.MOCK_MODE === 'true',
     nodeVersion: process.version,
     apiVersions: versionedRouter.getVersions(),
-    currentVersion: versionedRouter.currentVersion
+    currentVersion: versionedRouter.currentVersion,
+    projectsLoaded: Array.from(tenantManager.projects.keys())
   });
 });
 

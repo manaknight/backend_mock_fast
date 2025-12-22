@@ -2,23 +2,39 @@ const fs = require('fs');
 const path = require('path');
 
 const name = process.argv[2];
+const projectId = process.argv[3]; // Optional: target project
+
 if (!name) {
-  console.log('Usage: node scripts/generate-route.js <ModelName>');
-  console.log('Example: node scripts/generate-route.js Product');
+  console.log('Usage: node scripts/generate-route.js <ModelName> [projectId]');
+  console.log('Example (Shared): node scripts/generate-route.js Product');
+  console.log('Example (Project): node scripts/generate-route.js Product alpha');
   process.exit(1);
 }
 
 const lowerName = name.toLowerCase();
 const pluralName = `${lowerName}s`;
 const fileName = `${lowerName}Routes.js`;
-const routesDir = path.join(process.cwd(), 'routes');
+
+let routesDir;
+if (projectId) {
+  routesDir = path.join(process.cwd(), 'projects', projectId, 'routes');
+  if (!fs.existsSync(path.join(process.cwd(), 'projects', projectId))) {
+    console.error(`Error: Project directory "projects/${projectId}" does not exist.`);
+    process.exit(1);
+  }
+} else {
+  routesDir = path.join(process.cwd(), 'routes');
+}
+
 const filePath = path.join(routesDir, fileName);
 
 if (!fs.existsSync(routesDir)) {
-  fs.mkdirSync(routesDir);
+  fs.mkdirSync(routesDir, { recursive: true });
 }
 
-const template = `const DatabaseService = require('../services/DatabaseService');
+const template = `const DatabaseService = require('${projectId ? '../../../' : '../'}services/DatabaseService');
+const MockDataService = require('${projectId ? '../../../' : '../'}services/MockDataService');
+const { z } = require('zod');
 
 /**
  * Route definitions for ${name}
@@ -28,12 +44,9 @@ module.exports = [
     path: '/${pluralName}',
     method: 'GET',
     capability: '${pluralName}:read',
-    mock: () => [
-      { id: 1, name: 'Mock ${name} 1', createdAt: new Date().toISOString() },
-      { id: 2, name: 'Mock ${name} 2', createdAt: new Date().toISOString() }
-    ],
-    real: async (req) => {
-      return await DatabaseService.find('${pluralName}', {
+    mock: () => MockDataService.list(() => MockDataService.user(), 3),
+    real: async (req, db) => {
+      return await db.find('${pluralName}', {
         orderBy: { createdAt: 'desc' }
       });
     }
@@ -42,32 +55,11 @@ module.exports = [
     path: '/${pluralName}/:id',
     method: 'GET',
     capability: '${pluralName}:read',
-    mock: (req) => ({
-      id: req.params.id,
-      name: 'Mock ${name} ' + req.params.id,
-      description: 'This is a detailed mock description for ${name}',
-      createdAt: new Date().toISOString()
-    }),
-    real: async (req) => {
-      const results = await DatabaseService.find('${pluralName}', {
+    mock: (req) => MockDataService.user(req.params.id),
+    real: async (req, db) => {
+      return await db.findOne('${pluralName}', {
         where: { id: req.params.id }
       });
-      return results[0];
-    }
-  },
-  {
-    path: '/${pluralName}',
-    method: 'POST',
-    capability: '${pluralName}:write',
-    mock: (req) => ({
-      id: Math.floor(Math.random() * 1000),
-      ...req.body,
-      createdAt: new Date().toISOString()
-    }),
-    real: async (req) => {
-      // Logic for creating a ${name}
-      // return await DatabaseService.create('${pluralName}', req.body);
-      return { message: '${name} creation logic goes here', received: req.body };
     }
   }
 ];
@@ -81,14 +73,10 @@ if (fs.existsSync(filePath)) {
 fs.writeFileSync(filePath, template);
 
 console.log(`
-✅ Generated ${pluralName} routes at: routes/${fileName}
+✅ Generated ${pluralName} routes at: ${projectId ? 'projects/' + projectId + '/' : ''}routes/${fileName}
 
 Next Steps:
-1. Register these routes in server.js:
-   const RouterFactory = require('./core/RouterFactory');
-   const ${lowerName}Routes = require('./routes/${fileName}');
-   app.use('/api', RouterFactory.create(${lowerName}Routes));
-
+${projectId ? '1. The TenantManager will auto-discover these routes.' : '1. The Server auto-discovery will register these shared routes.'}
 2. Toggle MOCK_MODE=true in .env to test the mock implementation.
 `);
 

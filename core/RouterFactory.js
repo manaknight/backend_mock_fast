@@ -3,26 +3,40 @@ const auth = require('../middleware/auth');
 const { requireCapability } = require('../middleware/capability');
 const { z } = require('zod');
 const { catchAsync, ValidationError, NotFoundError, DatabaseError } = require('./errors');
+const DatabaseService = require('../services/DatabaseService');
+const TenantDatabaseService = require('./TenantDatabaseService');
+const AutoCRUDRouter = require('../services/AutoCRUDRouter');
+const SchemaIntelligenceService = require('../services/SchemaIntelligenceService');
 
 /**
  * RouterFactory generates Express routers from a structured route definition.
- * It automatically handles:
- * 1. Mock vs Real implementation switching
- * 2. Auth and Capability middleware injection
- * 3. Standardized response formatting
- * 4. Error handling
  */
 class RouterFactory {
   /**
    * Creates an Express router from an array of route definitions.
    * @param {Array} routes - Array of route objects
+   * @param {Object} options - Factory options { projectId, tenantDb }
    * @returns {express.Router}
    */
-  static create(routes) {
+  static create(routes, options = {}) {
+    const { projectId } = options;
+    let { tenantDb } = options;
+
     const router = express.Router();
     const isGlobalMock = process.env.MOCK_MODE === 'true';
 
+    // Create tenant-aware database service if projectId is provided and tenantDb isn't
+    if (projectId && !tenantDb) {
+      tenantDb = new TenantDatabaseService(DatabaseService, projectId);
+    }
+
     routes.forEach(route => {
+      // Check if this is an auto-CRUD route (has resource and schema, minimal other config)
+      if (this.isAutoCRUDRoute(route)) {
+        const crudRouter = AutoCRUDRouter.create(route, options);
+        router.use(route.path || `/${route.resource}`, crudRouter);
+        return; // Skip normal route processing
+      }
       const {
         path,
         method = 'GET',
@@ -30,8 +44,8 @@ class RouterFactory {
         mock,
         real,
         schema, // Zod schema for response validation
-        requestSchema, // Zod schema for request validation { body, query, params }
-        delay, // Optional delay override for this route
+        requestSchema, // Zod schema for request validation
+        delay, // Optional delay override
         forceMock = false,
         noAuth = false
       } = route;
@@ -56,7 +70,6 @@ class RouterFactory {
           middlewares.push(auth.verifyToken);
         }
       }
-      // Note: requireCapability automatically includes auth verification
 
       // 2. Main handler
       const handler = catchAsync(async (req, res) => {
@@ -79,7 +92,8 @@ class RouterFactory {
         if (shouldUseMock && mock) {
           responseData = typeof mock === 'function' ? await mock(req) : mock;
         } else if (real) {
-          responseData = await real(req);
+          // Inject tenantDb if available, otherwise fallback to base DatabaseService
+          responseData = await real(req, tenantDb || DatabaseService);
         } else {
           // Fallback if neither mock nor real is available/selected
           throw new NotFoundError(`No ${shouldUseMock ? 'mock' : 'real'} implementation for ${method} ${path}`);
@@ -102,18 +116,39 @@ class RouterFactory {
         });
       });
 
-      // Register route with Express
       const expressMethod = method.toLowerCase();
       if (typeof router[expressMethod] === 'function') {
         router[expressMethod](path, ...middlewares, handler);
-      } else {
-        console.error(`Unsupported HTTP method: ${method} for path ${path}`);
       }
     });
 
     return router;
   }
+
+  /**
+   * Check if a route definition should use AutoCRUDRouter
+   * @param {Object} route - Route definition
+   * @returns {boolean}
+   */
+  static isAutoCRUDRoute(route) {
+    // Must have resource name and schema
+    if (!route.resource || !route.schema) {
+      return false;
+    }
+
+    // Must have capabilities object (even if empty)
+    if (!route.capabilities) {
+      return false;
+    }
+
+    // Should not have traditional route properties
+    const hasTraditionalProps = route.method || route.path || route.mock || route.real || route.handler;
+    if (hasTraditionalProps) {
+      return false;
+    }
+
+    return true;
+  }
 }
 
 module.exports = RouterFactory;
-
