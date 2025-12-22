@@ -154,7 +154,6 @@ app.get('/api-docs', (req, res) => {
     requestSchema: r.requestSchema ? 'ZodSchema' : null,
     responseSchema: r.schema ? 'ZodSchema' : null
   }));
->>>>>>> 8a80d728ee4d98588b1abff9307fd87f9351deef
 
   res.send(`
     <html>
