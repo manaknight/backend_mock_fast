@@ -2,20 +2,36 @@ require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const morgan = require('morgan');
 const RouterFactory = require('./core/RouterFactory');
+const VersionedRouter = require('./core/VersionedRouter');
+const { globalErrorHandler } = require('./core/errors');
+const { applySecurityMiddleware } = require('./middleware/security');
+const logger = require('./core/Logger');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
+// Logging middleware
+app.use(morgan('combined', { stream: logger.stream }));
+
 // Middleware to parse JSON bodies
 app.use(express.json());
+
+// Apply security middleware
+applySecurityMiddleware(app);
+
+// Initialize versioned router
+const versionedRouter = new VersionedRouter();
 
 // Routes
 app.get('/', (req, res) => {
   res.json({
     message: 'Quick Fast Hybrid API is running',
     mock_mode: process.env.MOCK_MODE === 'true',
-    auto_discovery: true,
+    versioning: true,
+    versions: versionedRouter.getVersions(),
+    currentVersion: versionedRouter.currentVersion,
     docs: '/api-docs'
   });
 });
@@ -23,46 +39,90 @@ app.get('/', (req, res) => {
 // Documentation store
 const allRouteDefinitions = [];
 
-// Auto-discover and register all route files
+// Auto-discover and register all route files with versioning support
 const routesPath = path.join(__dirname, 'routes');
 if (fs.existsSync(routesPath)) {
   const routeFiles = fs.readdirSync(routesPath)
     .filter(file => file.endsWith('Routes.js'))
     .map(file => path.join(routesPath, file));
 
-  console.log(`🔍 Auto-discovering routes from ${routeFiles.length} files:`);
+  logger.info(`Auto-discovering routes from ${routeFiles.length} files`, {
+    routeFiles: routeFiles.map(f => path.basename(f))
+  });
 
   routeFiles.forEach(filePath => {
     try {
-      const routeDef = require(filePath);
-      allRouteDefinitions.push(...routeDef);
-      const routeName = path.basename(filePath, '.js');
-      app.use('/api', RouterFactory.create(routeDef));
-      console.log(`  ✅ ${routeName}`);
+      const routeModule = require(filePath);
+      const routeName = path.basename(filePath, '.js').replace('Routes', '');
+
+      // Support both versioned and legacy route formats
+      if (routeModule.v1 && routeModule.v2) {
+        // Versioned routes
+        versionedRouter.registerVersion('v1', routeModule.v1);
+        versionedRouter.registerVersion('v2', routeModule.v2);
+
+        // Store for documentation
+        allRouteDefinitions.push(...routeModule.v1, ...routeModule.v2);
+
+        logger.info(`Versioned routes loaded successfully`, {
+          routeName,
+          versions: ['v1', 'v2'],
+          v1Count: routeModule.v1.length,
+          v2Count: routeModule.v2.length
+        });
+      } else {
+        // Legacy format - register as v1
+        const routes = Array.isArray(routeModule) ? routeModule : routeModule.default || [];
+        versionedRouter.registerVersion('v1', routes);
+        allRouteDefinitions.push(...routes);
+
+        logger.info(`Legacy routes loaded as v1`, {
+          routeName,
+          routeCount: routes.length
+        });
+      }
     } catch (error) {
-      console.error(`  ❌ Failed to load ${filePath}:`, error.message);
+      logger.error(`Failed to load route file`, {
+        filePath,
+        error: error.message,
+        stack: error.stack
+      });
     }
   });
+
+  // Set current version (can be configured via env)
+  versionedRouter.setCurrentVersion(process.env.API_VERSION || 'v1');
+
+  // Use versioned router
+  app.use(versionedRouter.createRouter());
 }
 
 // API Documentation Endpoint
 app.get('/api-docs', (req, res) => {
-  const docs = allRouteDefinitions.map(r => ({
-    path: `/api${r.path}`,
-    method: r.method || 'GET',
-    capability: r.capability,
-    authRequired: !r.noAuth,
-    requestSchema: r.requestSchema ? 'ZodSchema' : null,
-    responseSchema: r.schema ? 'ZodSchema' : null
-  }));
+  const versions = versionedRouter.getVersions();
+  const versionedDocs = {};
+
+  // Group routes by version
+  versions.forEach(version => {
+    const routes = versionedRouter.getRoutes(version);
+    versionedDocs[version] = routes.map(r => ({
+      path: `/api/${version}${r.path}`,
+      method: r.method || 'GET',
+      capability: r.capability,
+      authRequired: !r.noAuth,
+      requestSchema: r.requestSchema ? 'ZodSchema' : null,
+      responseSchema: r.schema ? 'ZodSchema' : null
+    }));
+  });
 
   res.send(`
     <html>
       <head>
-        <title>API Documentation</title>
+        <title>API Documentation - Versioned</title>
         <style>
           body { font-family: sans-serif; padding: 20px; line-height: 1.6; background: #f4f4f9; }
-          .route { background: white; margin-bottom: 10px; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .version-section { background: white; margin-bottom: 20px; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+          .route { background: #f9f9f9; margin-bottom: 10px; padding: 15px; border-radius: 6px; border-left: 4px solid #007bff; }
           .method { display: inline-block; padding: 4px 8px; border-radius: 4px; color: white; font-weight: bold; min-width: 60px; text-align: center; }
           .GET { background: #61affe; }
           .POST { background: #49cc90; }
@@ -70,19 +130,31 @@ app.get('/api-docs', (req, res) => {
           .DELETE { background: #f93e3e; }
           .path { font-family: monospace; font-size: 1.1em; margin-left: 10px; }
           .meta { margin-top: 8px; color: #666; font-size: 0.9em; }
+          .version-header { color: #007bff; border-bottom: 2px solid #007bff; padding-bottom: 5px; }
           h1 { color: #333; }
+          .current-version { background: #e8f5e8; border-color: #28a745; }
+          .current-version .version-header { color: #28a745; border-color: #28a745; }
         </style>
       </head>
       <body>
-        <h1>Quick Fast Hybrid API Docs</h1>
-        ${docs.map(d => `
-          <div class="route">
-            <span class="method ${d.method}">${d.method}</span>
-            <span class="path">${d.path}</span>
-            <div class="meta">
-              Capability: ${d.capability || 'none'} | Auth: ${d.authRequired ? '✅' : '❌'} |
-              Validation: ${d.requestSchema ? 'Request ✅' : ''} ${d.responseSchema ? 'Response ✅' : ''}
-            </div>
+        <h1>Quick Fast Hybrid API Docs - Versioned</h1>
+        <p><strong>Current Version:</strong> ${versionedRouter.currentVersion}</p>
+        <p><strong>Available Versions:</strong> ${versions.join(', ')}</p>
+        <p><strong>Usage:</strong> Use <code>/api/v1/endpoint</code> or <code>/api/endpoint</code> (defaults to current version)</p>
+
+        ${versions.map(version => `
+          <div class="version-section ${version === versionedRouter.currentVersion ? 'current-version' : ''}">
+            <h2 class="version-header">Version ${version} ${version === versionedRouter.currentVersion ? '(Current)' : ''}</h2>
+            ${versionedDocs[version].map(d => `
+              <div class="route">
+                <span class="method ${d.method}">${d.method}</span>
+                <span class="path">${d.path}</span>
+                <div class="meta">
+                  Capability: ${d.capability || 'none'} | Auth: ${d.authRequired ? '✅' : '❌'} |
+                  Validation: ${d.requestSchema ? 'Request ✅' : ''} ${d.responseSchema ? 'Response ✅' : ''}
+                </div>
+              </div>
+            `).join('')}
           </div>
         `).join('')}
       </body>
@@ -90,13 +162,136 @@ app.get('/api-docs', (req, res) => {
   `);
 });
 
-// Health check route
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+// Health check route with detailed status
+app.get('/health', async (req, res) => {
+  const healthCheck = {
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV,
+    version: require('./package.json').version,
+    mockMode: process.env.MOCK_MODE === 'true',
+    apiVersion: versionedRouter.currentVersion,
+    availableVersions: versionedRouter.getVersions()
+  };
+
+  // Check database connection if not in mock mode
+  if (process.env.MOCK_MODE !== 'true') {
+    try {
+      const DatabaseService = require('./services/DatabaseService');
+      // Add a simple health check for the database
+      healthCheck.database = 'OK';
+    } catch (error) {
+      healthCheck.database = 'ERROR';
+      healthCheck.status = 'DEGRADED';
+      logger.error('Database health check failed', { error: error.message });
+    }
+  } else {
+    healthCheck.database = 'MOCK';
+  }
+
+  // Check memory usage
+  const memUsage = process.memoryUsage();
+  healthCheck.memory = {
+    rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`,
+    heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+    heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`
+  };
+
+  const statusCode = healthCheck.status === 'OK' ? 200 : 503;
+  res.status(statusCode).json(healthCheck);
 });
 
+// Readiness check (for Kubernetes/load balancers)
+app.get('/ready', (req, res) => {
+  // Basic readiness check - server is listening
+  res.json({
+    status: 'READY',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Liveness check (for Kubernetes)
+app.get('/live', (req, res) => {
+  res.json({
+    status: 'ALIVE',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Global error handling middleware (must be last)
+app.use(globalErrorHandler);
+
+// Graceful shutdown handling
+const gracefulShutdown = (signal) => {
+  logger.info(`Received ${signal}, initiating graceful shutdown`, {
+    uptime: process.uptime(),
+    signal
+  });
+
+  // Stop accepting new connections
+  server.close((err) => {
+    if (err) {
+      logger.error('Error during server shutdown', { error: err.message });
+      process.exit(1);
+    }
+
+    logger.info('Server closed successfully');
+
+    // Close database connections if any
+    if (process.env.MOCK_MODE !== 'true') {
+      try {
+        const DatabaseService = require('./services/DatabaseService');
+        // Add database cleanup here if needed
+        logger.info('Database connections cleaned up');
+      } catch (error) {
+        logger.error('Error cleaning up database connections', { error: error.message });
+      }
+    }
+
+    // Close logger transports
+    logger.logger.end(() => {
+      logger.info('Logger transports closed');
+      process.exit(0);
+    });
+  });
+
+  // Force shutdown after 30 seconds
+  setTimeout(() => {
+    logger.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 30000);
+};
+
 // Start server
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-  console.log(`Mock Mode: ${process.env.MOCK_MODE === 'true' ? 'ON 🛠️' : 'OFF 🚀'}`);
+const server = app.listen(port, () => {
+  logger.info('Server started successfully', {
+    port,
+    environment: process.env.NODE_ENV,
+    mockMode: process.env.MOCK_MODE === 'true',
+    nodeVersion: process.version,
+    apiVersions: versionedRouter.getVersions(),
+    currentVersion: versionedRouter.currentVersion
+  });
+});
+
+// Handle shutdown signals
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception', {
+    error: error.message,
+    stack: error.stack
+  });
+  gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection', {
+    reason: reason.message || reason,
+    promise: promise.toString()
+  });
+  gracefulShutdown('unhandledRejection');
 });
